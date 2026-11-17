@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: soyer-accounting-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: soyer-accounting-db
+          property: connectionString
+      - key: ADMIN_IDS
+        sync: false
+      - key: DENIS_ID
+        sync: false
+      - key: EGOR_ID
+        sync: false
+      - key: API_SECRET
+        generateValue: true
+databases:
+  - name: soyer-accounting-db
+    plan: free
