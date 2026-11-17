@@ -51,7 +51,7 @@ def init_db():
           denis_share NUMERIC(30,10) NOT NULL, egor_share NUMERIC(30,10) NOT NULL,
           note TEXT, created_by BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL,
           status TEXT NOT NULL, deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-        CREATE OR REPLACE FUNCTION soyer_archive_exchange_delete() RETURNS trigger AS $
+        CREATE OR REPLACE FUNCTION soyer_archive_exchange_delete() RETURNS trigger AS $soyer$
         BEGIN
           INSERT INTO deleted_exchanges(original_id,external_id,direction,received,paid,cost,gross,currency,
             denis_share,egor_share,note,created_by,created_at,status)
@@ -62,7 +62,7 @@ def init_db():
             format('id=%s direction=%s gross=%s %s',OLD.id,OLD.direction,OLD.gross,OLD.currency));
           RETURN OLD;
         END;
-        $ LANGUAGE plpgsql;
+        $soyer$ LANGUAGE plpgsql;
         DROP TRIGGER IF EXISTS soyer_archive_exchange_before_delete ON exchanges;
         CREATE TRIGGER soyer_archive_exchange_before_delete
           BEFORE DELETE ON exchanges FOR EACH ROW
