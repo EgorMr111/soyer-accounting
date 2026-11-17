@@ -4,6 +4,8 @@ from xml.sax.saxutils import escape
 from aiohttp import web
 from db import conn, add_exchange, add_expense, add_payout, dashboard, partner_report, audit
 
+notify = None
+
 APP_PASSWORD=os.getenv("APP_PASSWORD","")
 ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
 SESSION_SECRET=os.getenv("SESSION_SECRET","")
@@ -236,7 +238,9 @@ async def backup_json(request):
 
 async def health(request): return web.json_response({"ok":True,"service":"SOYER ACCOUNTING"})
 
-def create_app(notify=None):
+def create_app(notify_callback=None):
+    global notify
+    notify = notify_callback
     app=web.Application(middlewares=[auth_middleware],client_max_size=1024*1024)
     app.router.add_post("/api/login",login); app.router.add_post("/api/logout",logout)
     app.router.add_get("/api/me",me)
