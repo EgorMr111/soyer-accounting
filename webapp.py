@@ -207,6 +207,8 @@ def _make_xlsx(sheets):
     return out.getvalue()
 
 async def export_xlsx(request):
+    if not _require_admin(request):
+        return web.json_response({"error":"Експорт доступний лише Єгору."},status=403)
     where,params=_date_filter(request)
     with conn() as c,c.cursor() as q:
         q.execute("SELECT id,direction,received,paid,cost,gross,currency,note,created_at FROM exchanges"+where+" ORDER BY id DESC",params)
