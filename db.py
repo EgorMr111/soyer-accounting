@@ -53,14 +53,20 @@ def init_db():
           status TEXT NOT NULL, deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
         CREATE OR REPLACE FUNCTION soyer_archive_exchange_delete() RETURNS trigger AS $soyer$
         BEGIN
-          INSERT INTO deleted_exchanges(original_id,external_id,direction,received,paid,cost,gross,currency,
-            denis_share,egor_share,note,created_by,created_at,status)
-          VALUES(OLD.id,OLD.external_id,OLD.direction,OLD.received,OLD.paid,OLD.cost,OLD.gross,OLD.currency,
-            OLD.denis_share,OLD.egor_share,OLD.note,OLD.created_by,OLD.created_at,OLD.status);
-          INSERT INTO audit_log(actor,action,details)
-          VALUES(0,'exchange_hard_delete_archived',
-            format('id=%s direction=%s gross=%s %s',OLD.id,OLD.direction,OLD.gross,OLD.currency));
-          RETURN OLD;
+          -- Never physically delete financial records. Archive a snapshot and
+          -- mark the original row hidden from active reports instead.
+          IF OLD.status <> 'DELETED' THEN
+            INSERT INTO deleted_exchanges(original_id,external_id,direction,received,paid,cost,gross,currency,
+              denis_share,egor_share,note,created_by,created_at,status)
+            VALUES(OLD.id,OLD.external_id,OLD.direction,OLD.received,OLD.paid,OLD.cost,OLD.gross,OLD.currency,
+              OLD.denis_share,OLD.egor_share,OLD.note,OLD.created_by,OLD.created_at,OLD.status);
+            UPDATE exchanges SET status='DELETED' WHERE id=OLD.id;
+            INSERT INTO audit_log(actor,action,details)
+            VALUES(0,'exchange_delete_blocked',
+              format('DELETE заблоковано; запис #%s переміщено в архів. direction=%s gross=%s %s',OLD.id,OLD.direction,OLD.gross,OLD.currency));
+          END IF;
+          -- Returning NULL cancels the DELETE statement.
+          RETURN NULL;
         END;
         $soyer$ LANGUAGE plpgsql;
         DROP TRIGGER IF EXISTS soyer_archive_exchange_before_delete ON exchanges;
