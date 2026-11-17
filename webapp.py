@@ -117,7 +117,9 @@ async def exchanges(request):
     try:
         d=await request.json()
         result=add_exchange(d["direction"],_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],_actor_id(request))
-        if notify: await notify(f"✅ Новий обмін #{result['id']} · {result['direction']} · результат {result['gross']} {result['currency']}")
+        if notify:
+            try: await notify(f"✅ Новий обмін #{result['id']} · {result['direction']} · результат {result['gross']} {result['currency']}")
+            except Exception: logging.exception("Database operation saved, but Telegram notification failed")
         return web.json_response({"ok":True,**{k:str(v) for k,v in result.items()}})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
@@ -137,7 +139,9 @@ async def expenses(request):
         currency=str(d["currency"]).upper()
         if currency not in ("UAH","USDT"): raise ValueError("Валюта має бути UAH або USDT")
         add_expense(currency,amount,str(d["description"])[:300],_actor_id(request))
-        if notify: await notify(f"💸 Нова витрата: {amount} {currency} · {str(d['description'])[:120]}")
+        if notify:
+            try: await notify(f"💸 Нова витрата: {amount} {currency} · {str(d['description'])[:120]}")
+            except Exception: logging.exception("Database operation saved, but Telegram notification failed")
         return web.json_response({"ok":True})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
@@ -155,7 +159,9 @@ async def payouts(request):
         if partner not in ("denis","egor"): raise ValueError("Невідомий партнер")
         if currency not in ("UAH","USDT") or amount<=0: raise ValueError("Перевірте валюту та суму")
         add_payout(partner,amount,currency,_actor_id(request))
-        if notify: await notify(f"💰 Виплата: {partner} · {amount} {currency}")
+        if notify:
+            try: await notify(f"💰 Виплата: {partner} · {amount} {currency}")
+            except Exception: logging.exception("Database operation saved, but Telegram notification failed")
         return web.json_response({"ok":True})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
