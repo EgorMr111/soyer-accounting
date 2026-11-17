@@ -31,6 +31,20 @@ def init_db():
           id BIGSERIAL PRIMARY KEY, actor BIGINT NOT NULL, action TEXT NOT NULL,
           details TEXT, created_at TIMESTAMPTZ DEFAULT NOW());
         """)
+        # Safe migrations for databases created by earlier SOYER ACCOUNTING versions.
+        q.execute("""
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS external_id TEXT;
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS denis_share NUMERIC(30,10) NOT NULL DEFAULT 0;
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS egor_share NUMERIC(30,10) NOT NULL DEFAULT 0;
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS created_by BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        ALTER TABLE exchanges ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'SUCCESS';
+        ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_by BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE expenses ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        ALTER TABLE payouts ADD COLUMN IF NOT EXISTS created_by BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE payouts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        CREATE UNIQUE INDEX IF NOT EXISTS exchanges_external_id_unique ON exchanges(external_id) WHERE external_id IS NOT NULL;
+        """)
         c.commit()
 
 def add_exchange(direction, received, paid, cost, note, actor, external_id=None):
