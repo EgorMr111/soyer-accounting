@@ -58,6 +58,7 @@ async def stats(c: CallbackQuery):
         "📊 <b>SOYER ACCOUNTING</b>\n\n"
         f"Успішних обмінів: <b>{d['count']}</b>\n"
         f"Валовий прибуток: <b>{money(d['gross'])} {d['currency']}</b>\n"
+        f"Збитки: <b>{money(d['losses'])} {d['currency']}</b>\n"
         f"Денис · 80%: <b>{money(d['denis'])} {d['currency']}</b>\n"
         f"Єгор · 20%: <b>{money(d['egor'])} {d['currency']}</b>\n"
         f"Витрати: <b>{money(d['expenses'])} {d['currency']}</b>\n"
@@ -76,6 +77,7 @@ async def exchange(c: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("dir:"))
 async def direction(c: CallbackQuery, state: FSMContext):
+    if not allowed(c.from_user.id): return await c.answer("Немає доступу", show_alert=True)
     await state.update_data(direction=c.data.split(":")[1])
     await state.set_state(ExchangeForm.received)
     await c.message.answer("Вкажіть суму, отриману від клієнта (число):")
@@ -85,7 +87,7 @@ async def direction(c: CallbackQuery, state: FSMContext):
 async def received(m: Message, state: FSMContext):
     try: v = Decimal(m.text.replace(",", "."))
     except: return await m.answer("Введіть коректне число, наприклад 100 або 100.50")
-    if v <= 0: return await m.answer("Сума має бути більшою за нуль.")
+    if not v.is_finite() or v <= 0: return await m.answer("Сума має бути скінченним числом, більшим за нуль.")
     await state.update_data(received=str(v)); await state.set_state(ExchangeForm.paid)
     await m.answer("Вкажіть суму, видану клієнту:")
 
@@ -93,7 +95,7 @@ async def received(m: Message, state: FSMContext):
 async def paid(m: Message, state: FSMContext):
     try: v = Decimal(m.text.replace(",", "."))
     except: return await m.answer("Введіть коректне число.")
-    if v <= 0: return await m.answer("Сума має бути більшою за нуль.")
+    if not v.is_finite() or v <= 0: return await m.answer("Сума має бути скінченним числом, більшим за нуль.")
     await state.update_data(paid=str(v)); await state.set_state(ExchangeForm.cost)
     await m.answer("Вкажіть собівартість у валюті видачі. Для точного розрахунку валовий прибуток буде в валюті видачі:")
 
@@ -101,7 +103,7 @@ async def paid(m: Message, state: FSMContext):
 async def cost(m: Message, state: FSMContext):
     try: v = Decimal(m.text.replace(",", "."))
     except: return await m.answer("Введіть коректне число.")
-    if v < 0: return await m.answer("Собівартість не може бути від'ємною.")
+    if not v.is_finite() or v < 0: return await m.answer("Собівартість має бути скінченним невід'ємним числом.")
     await state.update_data(cost=str(v)); await state.set_state(ExchangeForm.note)
     await m.answer("Примітка або номер заявки (або напишіть —):")
 
@@ -111,16 +113,23 @@ async def note(m: Message, state: FSMContext):
     try:
         result = add_exchange(data["direction"], Decimal(data["received"]), Decimal(data["paid"]),
                               Decimal(data["cost"]), m.text[:300], m.from_user.id)
-    except Exception as e:
+    except Exception:
         logging.exception("exchange save failed")
-        await m.answer("Не вдалося зберегти операцію. Перевірте налаштування бази даних."); await state.clear(); return
+        await m.answer("Не вдалося зберегти операцію. Перевірте підключення до бази даних або введені дані."); await state.clear(); return
     await state.clear()
+    gross = result["gross"]
+    if gross < 0:
+        result_line = f"Збиток: <b>{money(abs(gross))} {result['currency']}</b>"
+        shares_line = "Частки партнерів не нараховані через збиток."
+    else:
+        result_line = f"Валовий прибуток: <b>{money(gross)} {result['currency']}</b>"
+        shares_line = (f"Денис (80%): <b>{money(result['denis'])} {result['currency']}</b>\n"
+                       f"Єгор (20%): <b>{money(result['egor'])} {result['currency']}</b>")
     await m.answer(
         f"✅ <b>Обмін #{result['id']} записано</b>\n"
-        f"Валовий прибуток: <b>{money(result['gross'])} {result['currency']}</b>\n"
-        f"Денис (80%): <b>{money(result['denis'])}</b>\n"
-        f"Єгор (20%): <b>{money(result['egor'])}</b>\n"
-        "Статус: успішний. Частки нараховані, але не виплачені.", reply_markup=menu())
+        f"{result_line}\n"
+        f"{shares_line}\n"
+        "Статус: успішний. Частки нараховані, але не виплачені (якщо є прибуток).", reply_markup=menu())
 
 @dp.callback_query(F.data == "history")
 async def history(c: CallbackQuery):
@@ -129,7 +138,7 @@ async def history(c: CallbackQuery):
     if not rows: msg = "📋 Операцій поки немає."
     else:
         msg = "📋 <b>Останні обміни</b>\n\n" + "\n".join(
-            f"#{r['id']} · {r['direction']} · {money(r['gross'])} {r['currency']} · {r['created_at']:%d.%m %H:%M}"
+            f"#{r['id']} · {r['direction']} · {'Збиток' if r['gross'] < 0 else 'Прибуток'} {money(abs(r['gross']))} {r['currency']} · {r['created_at']:%d.%m %H:%M}"
             for r in rows)
     await c.message.edit_text(msg, reply_markup=menu()); await c.answer()
 
@@ -160,7 +169,7 @@ async def exp_currency(m: Message, state: FSMContext):
 async def exp_amount(m: Message, state: FSMContext):
     try: v=Decimal(m.text.replace(",", "."))
     except: return await m.answer("Введіть число.")
-    if v <= 0: return await m.answer("Сума має бути більшою за нуль.")
+    if not v.is_finite() or v <= 0: return await m.answer("Сума має бути скінченним числом, більшою за нуль.")
     await state.update_data(amount=str(v)); await state.set_state(ExpenseForm.description)
     await m.answer("Опис витрати:")
 
@@ -192,7 +201,7 @@ async def payout_cmd(m: Message):
         return await m.answer("Формат: /pay denis 100 UAH або /pay egor 50 USDT")
     try: amount=Decimal(parts[2].replace(",", "."))
     except: return await m.answer("Некоректна сума.")
-    if amount<=0: return await m.answer("Сума має бути більшою за нуль.")
+    if not amount.is_finite() or amount<=0: return await m.answer("Сума має бути скінченним числом, більшою за нуль.")
     add_payout(parts[1].lower(), amount, parts[3].upper(), m.from_user.id)
     await m.answer("✅ Виплату зафіксовано.", reply_markup=menu())
 
