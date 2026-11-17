@@ -4,6 +4,7 @@ from aiohttp import web
 from db import conn, add_exchange, add_expense, add_payout, dashboard, partner_report, audit
 
 APP_PASSWORD=os.getenv("APP_PASSWORD","")
+ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
 SESSION_SECRET=os.getenv("SESSION_SECRET","")
 APP_URL=os.getenv("APP_URL","")
 COOKIE="soyer_session"
@@ -12,13 +13,21 @@ SESSION_TTL=60*60*24*7
 def _signature(value):
     return hmac.new(SESSION_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
 
-def _valid_session(request):
+def _session_role(request):
     raw=request.cookies.get(COOKIE,"")
     try:
-        stamp,sig=raw.split(".",1)
-        if int(stamp)<int(time.time())-SESSION_TTL: return False
-        return hmac.compare_digest(sig,_signature(stamp))
-    except Exception: return False
+        stamp,role,sig=raw.split(".",2)
+        signed=stamp+"."+role
+        if int(stamp)<int(time.time())-SESSION_TTL: return None
+        if not hmac.compare_digest(sig,_signature(signed)): return None
+        return role if role in ("admin","user") else None
+    except Exception: return None
+
+def _valid_session(request):
+    return _session_role(request) is not None
+
+def _require_admin(request):
+    return _session_role(request)=="admin"
 
 @web.middleware
 async def auth_middleware(request,handler):
@@ -36,19 +45,48 @@ def _decimal(value,name):
     return v
 
 async def login(request):
-    if not APP_PASSWORD or not SESSION_SECRET:
-        return web.json_response({"error":"APP_PASSWORD та SESSION_SECRET потрібно додати в Render Environment"},status=503)
+    if not APP_PASSWORD or not ADMIN_PASSWORD or not SESSION_SECRET:
+        return web.json_response({"error":"APP_PASSWORD, ADMIN_PASSWORD та SESSION_SECRET потрібно додати в Render Environment"},status=503)
     try: data=await request.json()
     except Exception: return web.json_response({"error":"Некоректний запит"},status=400)
-    if not hmac.compare_digest(str(data.get("password","")),APP_PASSWORD):
+    password=str(data.get("password",""))
+    if hmac.compare_digest(password,ADMIN_PASSWORD):
+        role="admin"
+    elif hmac.compare_digest(password,APP_PASSWORD):
+        role="user"
+    else:
         return web.json_response({"error":"Неправильний пароль"},status=401)
     stamp=str(int(time.time()))
-    response=web.json_response({"ok":True})
-    response.set_cookie(COOKIE,stamp+"."+_signature(stamp),httponly=True,secure=True,samesite="Strict",max_age=SESSION_TTL,path="/")
+    signed=stamp+"."+role
+    response=web.json_response({"ok":True,"role":role})
+    response.set_cookie(COOKIE,signed+"."+_signature(signed),httponly=True,secure=True,samesite="Strict",max_age=SESSION_TTL,path="/")
     return response
 
 async def logout(request):
     response=web.json_response({"ok":True}); response.del_cookie(COOKIE,path="/"); return response
+
+async def me(request):
+    return web.json_response({"role":_session_role(request),"can_delete":_require_admin(request)})
+
+async def delete_exchange(request):
+    if not _require_admin(request):
+        return web.json_response({"error":"Недостатньо прав. Видаляти обміни може лише Єгор."},status=403)
+    try:
+        exchange_id=int(request.match_info["exchange_id"])
+        if exchange_id<=0: raise ValueError()
+        with conn() as c,c.cursor() as q:
+            q.execute("DELETE FROM exchanges WHERE id=%s RETURNING id,direction,gross,currency",(exchange_id,))
+            row=q.fetchone()
+            if not row:
+                return web.json_response({"error":"Обмін не знайдено"},status=404)
+            q.execute("INSERT INTO audit_log(actor,action,details) VALUES(%s,%s,%s)",(0,"exchange_deleted",f"id={row[0]} direction={row[1]} gross={row[2]} {row[3]}"))
+            c.commit()
+        return web.json_response({"ok":True,"deleted_id":exchange_id})
+    except (ValueError,KeyError):
+        return web.json_response({"error":"Некоректний ID обміну"},status=400)
+    except Exception:
+        logging.exception("Exchange deletion failed")
+        return web.json_response({"error":"Не вдалося видалити обмін"},status=500)
 
 async def stats(request):
     return web.json_response({"dashboard":dashboard(),"partners":partner_report()},dumps=lambda obj:json.dumps(obj,default=str))
@@ -110,7 +148,9 @@ async def health(request): return web.json_response({"ok":True,"service":"SOYER 
 def create_app(notify=None):
     app=web.Application(middlewares=[auth_middleware],client_max_size=1024*1024)
     app.router.add_post("/api/login",login); app.router.add_post("/api/logout",logout)
+    app.router.add_get("/api/me",me)
     app.router.add_get("/api/stats",stats); app.router.add_get("/api/exchanges",exchanges); app.router.add_post("/api/exchanges",exchanges)
+    app.router.add_delete("/api/exchanges/{exchange_id:\\d+}",delete_exchange)
     app.router.add_get("/api/expenses",expenses); app.router.add_post("/api/expenses",expenses)
     app.router.add_get("/api/payouts",payouts); app.router.add_post("/api/payouts",payouts)
     app.router.add_get("/health",health)
