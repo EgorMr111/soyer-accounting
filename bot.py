@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from db import init_db, add_exchange, dashboard, recent_exchanges, add_expense, partner_report, add_payout, audit
+from webapp import create_app
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("BOT_TOKEN", "")
@@ -18,6 +19,7 @@ DENIS_ID = int(os.getenv("DENIS_ID", "0"))
 EGOR_ID = int(os.getenv("EGOR_ID", "0"))
 API_SECRET = os.getenv("API_SECRET", "")
 PORT = int(os.getenv("PORT", "10000"))
+APP_URL = os.getenv("APP_URL", "").rstrip("/")
 
 bot = Bot(TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -44,7 +46,7 @@ def money(v): return f"{Decimal(v):,.2f}".replace(",", " ").replace(".", ",")
 async def start(m: Message):
     if not allowed(m.from_user.id):
         await m.answer("⛔ Доступ закритий. Ваш Telegram ID: <code>%s</code>" % m.from_user.id); return
-    await m.answer("💼 <b>SOYER ACCOUNTING</b>\nБухгалтерія обмінника\n\nОберіть дію:", reply_markup=menu())
+    await m.answer("💼 <b>SOYER ACCOUNTING</b>\n\nВідкрийте вебзастосунок для роботи з обмінами, витратами та виплатами:\n" + (f"<a href=\"{APP_URL}\">Відкрити SOYER ACCOUNTING</a>" if APP_URL else "Посилання на застосунок ще не налаштоване.") + "\n\nЦей бот надсилатиме повідомлення про нові операції.")
 
 @dp.message(Command("id"))
 async def get_id(m: Message):
@@ -225,8 +227,13 @@ async def api_exchange(request):
     return web.json_response({"ok":True,"exchange_id":result["id"],"gross":str(result["gross"]),
                               "denis":str(result["denis"]),"egor":str(result["egor"])})
 
+async def notify_admins(message):
+    for uid in ADMIN_IDS:
+        try: await bot.send_message(uid, message)
+        except Exception: logging.exception("Telegram notification failed for %s", uid)
+
 async def run_api():
-    app=web.Application(client_max_size=1024*1024)
+    app=create_app(notify=notify_admins)
     app.router.add_post("/api/exchanges/success", api_exchange)
     runner=web.AppRunner(app); await runner.setup()
     site=web.TCPSite(runner,"0.0.0.0",PORT); await site.start()
