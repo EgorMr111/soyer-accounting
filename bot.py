@@ -233,7 +233,7 @@ async def notify_admins(message):
         except Exception: logging.exception("Telegram notification failed for %s", uid)
 
 async def run_api():
-    app=create_app(notify=notify_admins)
+    app=create_app(notify_callback=notify_admins)
     app.router.add_post("/api/exchanges/success", api_exchange)
     runner=web.AppRunner(app); await runner.setup()
     site=web.TCPSite(runner,"0.0.0.0",PORT); await site.start()
