@@ -51,7 +51,7 @@ async def logout(request):
     response=web.json_response({"ok":True}); response.del_cookie(COOKIE,path="/"); return response
 
 async def stats(request):
-    return web.json_response({"dashboard":dashboard(),"partners":partner_report()})
+    return web.json_response({"dashboard":dashboard(),"partners":partner_report()},dumps=lambda obj:json.dumps(obj,default=str))
 
 async def exchanges(request):
     if request.method=="GET":
@@ -63,6 +63,7 @@ async def exchanges(request):
     try:
         d=await request.json()
         result=add_exchange(d["direction"],_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],int(d.get("actor",0)))
+        if notify: await notify(f"✅ Новий обмін #{result['id']} · {result['direction']} · результат {result['gross']} {result['currency']}")
         return web.json_response({"ok":True,**{k:str(v) for k,v in result.items()}})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
@@ -81,6 +82,7 @@ async def expenses(request):
         currency=str(d["currency"]).upper()
         if currency not in ("UAH","USDT"): raise ValueError("Валюта має бути UAH або USDT")
         add_expense(currency,amount,str(d["description"])[:300],int(d.get("actor",0)))
+        if notify: await notify(f"💸 Нова витрата: {amount} {currency} · {str(d['description'])[:120]}")
         return web.json_response({"ok":True})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
@@ -97,6 +99,7 @@ async def payouts(request):
         if partner not in ("denis","egor"): raise ValueError("Невідомий партнер")
         if currency not in ("UAH","USDT") or amount<=0: raise ValueError("Перевірте валюту та суму")
         add_payout(partner,amount,currency,int(d.get("actor",0)))
+        if notify: await notify(f"💰 Виплата: {partner} · {amount} {currency}")
         return web.json_response({"ok":True})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
     except Exception:
@@ -104,7 +107,7 @@ async def payouts(request):
 
 async def health(request): return web.json_response({"ok":True,"service":"SOYER ACCOUNTING"})
 
-def create_app(bot=None, admin_ids=None):
+def create_app(notify=None):
     app=web.Application(middlewares=[auth_middleware],client_max_size=1024*1024)
     app.router.add_post("/api/login",login); app.router.add_post("/api/logout",logout)
     app.router.add_get("/api/stats",stats); app.router.add_get("/api/exchanges",exchanges); app.router.add_post("/api/exchanges",exchanges)
