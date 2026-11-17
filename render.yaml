@@ -20,6 +20,12 @@ services:
         sync: false
       - key: API_SECRET
         generateValue: true
+      - key: APP_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: APP_URL
+        sync: false
 databases:
   - name: soyer-accounting-db
     plan: free
