@@ -1,9 +1,13 @@
 # SOYER ACCOUNTING
 
-Telegram accounting bot + signed API for SOYER EXCHANGE.
+Installable PWA accounting workspace for SOYER EXCHANGE, backed by PostgreSQL. Telegram bot is used as a notification companion.
 
 ## Features
-- Two admins by Telegram ID.
+- Password-protected PWA with signed secure session cookie.
+- Installable PWA for desktop and mobile (service worker + manifest).
+- Dashboard, exchange history, expenses, partner shares and payouts.
+- Telegram notifications for new PWA operations.
+- Two admins by Telegram ID for the Telegram companion bot.
 - Manual exchange entry for USDT→UAH and UAH→USDT.
 - Gross profit = payout amount - cost basis, in the payout currency.
 - Automatic 80% Denis / 20% Egor accrual.
@@ -25,7 +29,7 @@ For each exchange, `paid` and `cost` must be entered in the same currency: the c
    - `DENIS_ID`: Denis Telegram numeric ID
    - `EGOR_ID`: Egor Telegram numeric ID
    Render creates PostgreSQL and supplies `DATABASE_URL`.
-5. Deploy. Open the bot in Telegram and send `/start`.
+5. Deploy. Open `https://soyer-accounting.onrender.com` and sign in with `APP_PASSWORD`. Send `/start` to the Telegram bot to get the app link and receive operation notifications.
 
 ## Getting Telegram IDs
 Each admin opens the bot and sends `/id`. Use the returned numeric IDs in Render Environment. Do not publish bot token or API secret.
@@ -46,6 +50,10 @@ Example body:
 }
 ```
 The `external_id` must be unique. Repeated IDs are rejected by PostgreSQL uniqueness. Only call this endpoint after the exchange is genuinely marked successful.
+
+## PWA installation
+
+Open the service URL in Chrome or Edge and use the install icon in the address bar (or the in-app Install button when offered). On iPhone, use Share → Add to Home Screen. The app requires an internet connection for live PostgreSQL data.
 
 ## Limitations of this MVP
 - Partner reports currently show UAH accruals; USDT exchange accruals are retained separately in the database and are not yet combined or converted into UAH.
