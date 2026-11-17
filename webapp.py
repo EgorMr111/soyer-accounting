@@ -10,7 +10,7 @@ APP_PASSWORD=os.getenv("APP_PASSWORD","")
 ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
 SESSION_SECRET=os.getenv("SESSION_SECRET","")
 APP_URL=os.getenv("APP_URL","")
-COOKIE="soyer_session"
+COOKIE="soyer_session_v2"
 SESSION_TTL=60*60*24*7
 
 def _signature(value):
