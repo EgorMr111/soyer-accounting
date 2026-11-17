@@ -36,18 +36,20 @@ def init_db():
 def add_exchange(direction, received, paid, cost, note, actor, external_id=None):
     received,paid,cost=Decimal(received),Decimal(paid),Decimal(cost)
     if direction not in ("USDT_UAH","UAH_USDT"): raise ValueError("invalid direction")
+    if not all(v.is_finite() for v in (received, paid, cost)): raise ValueError("amounts must be finite numbers")
     if received<=0 or paid<=0 or cost<0: raise ValueError("invalid amounts")
     currency="UAH" if direction=="USDT_UAH" else "USDT"
     gross=(paid-cost).quantize(Decimal("0.00000001"),rounding=ROUND_HALF_UP)
-    if gross<0: raise ValueError("cost cannot exceed paid amount")
-    denis=(gross*Decimal("0.80")).quantize(Decimal("0.00000001"),rounding=ROUND_HALF_UP)
-    egor=gross-denis
+    # A loss is a valid completed exchange; partner shares are accrued only from positive profit.
+    distributable=max(gross, Decimal("0"))
+    denis=(distributable*Decimal("0.80")).quantize(Decimal("0.00000001"),rounding=ROUND_HALF_UP)
+    egor=distributable-denis
     with conn() as c, c.cursor(cursor_factory=RealDictCursor) as q:
         q.execute("""INSERT INTO exchanges(external_id,direction,received,paid,cost,gross,currency,denis_share,egor_share,note,created_by)
           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
           (external_id,direction,received,paid,cost,gross,currency,denis,egor,note,actor))
         row=q.fetchone(); c.commit()
-    audit(actor,"exchange_created",f"id={row['id']} external_id={external_id or ''}")
+    audit(actor,"exchange_created",f"id={row['id']} external_id={external_id or ''} gross={gross} {currency}")
     return {"id":row["id"],"gross":gross,"denis":denis,"egor":egor,"currency":currency}
 
 def audit(actor,action,details=""):
@@ -56,12 +58,19 @@ def audit(actor,action,details=""):
 
 def dashboard():
     with conn() as c,c.cursor(cursor_factory=RealDictCursor) as q:
-        q.execute("SELECT COUNT(*) n, COALESCE(SUM(gross) FILTER(WHERE currency='UAH'),0) uah, COALESCE(SUM(gross) FILTER(WHERE currency='USDT'),0) usdt, COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0) du, COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) eu FROM exchanges WHERE status='SUCCESS'")
+        q.execute("""SELECT COUNT(*) n,
+          COALESCE(SUM(gross) FILTER(WHERE currency='UAH' AND gross>0),0) uah,
+          COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='UAH' AND gross<0),0) losses,
+          COALESCE(SUM(gross) FILTER(WHERE currency='USDT' AND gross>0),0) usdt,
+          COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='USDT' AND gross<0),0) losses_usdt,
+          COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0) du,
+          COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) eu
+          FROM exchanges WHERE status='SUCCESS'""")
         r=q.fetchone()
         q.execute("SELECT COALESCE(SUM(amount),0) v FROM expenses WHERE currency='UAH'"); exp=q.fetchone()["v"]
         q.execute("SELECT COALESCE(SUM(amount),0) v FROM payouts WHERE currency='UAH'"); po=q.fetchone()["v"]
-    # Dashboard default shows UAH; USDT is separately visible in the detailed report in a future enhancement.
-    return {"count":r["n"],"gross":r["uah"],"denis":r["du"],"egor":r["eu"],"expenses":exp,"paid_out":po,"currency":"UAH","gross_usdt":r["usdt"]}
+    return {"count":r["n"],"gross":r["uah"],"losses":r["losses"],"denis":r["du"],"egor":r["eu"],
+            "expenses":exp,"paid_out":po,"currency":"UAH","gross_usdt":r["usdt"],"losses_usdt":r["losses_usdt"]}
 
 def recent_exchanges():
     with conn() as c,c.cursor(cursor_factory=RealDictCursor) as q:
