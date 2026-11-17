@@ -1,5 +1,6 @@
-import os, hmac, hashlib, time, json, logging
+import os, hmac, hashlib, time, json, logging, io, zipfile
 from decimal import Decimal, InvalidOperation
+from xml.sax.saxutils import escape
 from aiohttp import web
 from db import conn, add_exchange, add_expense, add_payout, dashboard, partner_report, audit
 
@@ -94,7 +95,8 @@ async def stats(request):
 async def exchanges(request):
     if request.method=="GET":
         with conn() as c,c.cursor() as q:
-            q.execute("SELECT id,direction,received,paid,cost,gross,currency,denis_share,egor_share,note,created_at FROM exchanges ORDER BY id DESC LIMIT 100")
+            where,params=_date_filter(request)
+            q.execute("SELECT id,direction,received,paid,cost,gross,currency,denis_share,egor_share,note,created_at FROM exchanges"+where+" ORDER BY id DESC LIMIT 100",params)
             rows=q.fetchall()
         keys=["id","direction","received","paid","cost","gross","currency","denis_share","egor_share","note","created_at"]
         return web.json_response([dict(zip(keys,[str(v) if isinstance(v,Decimal) else v.isoformat() if hasattr(v,"isoformat") else v for v in row])) for row in rows])
@@ -111,7 +113,8 @@ async def exchanges(request):
 async def expenses(request):
     if request.method=="GET":
         with conn() as c,c.cursor() as q:
-            q.execute("SELECT id,currency,amount,description,created_at FROM expenses ORDER BY id DESC LIMIT 100")
+            where,params=_date_filter(request)
+            q.execute("SELECT id,currency,amount,description,created_at FROM expenses"+where+" ORDER BY id DESC LIMIT 500",params)
             rows=q.fetchall()
         return web.json_response([{"id":r[0],"currency":r[1],"amount":str(r[2]),"description":r[3],"created_at":r[4].isoformat()} for r in rows])
     try:
@@ -129,7 +132,8 @@ async def expenses(request):
 async def payouts(request):
     if request.method=="GET":
         with conn() as c,c.cursor() as q:
-            q.execute("SELECT id,partner,currency,amount,created_at FROM payouts ORDER BY id DESC LIMIT 100")
+            where,params=_date_filter(request)
+            q.execute("SELECT id,partner,currency,amount,created_at FROM payouts"+where+" ORDER BY id DESC LIMIT 500",params)
             rows=q.fetchall()
         return web.json_response([{"id":r[0],"partner":r[1],"currency":r[2],"amount":str(r[3]),"created_at":r[4].isoformat()} for r in rows])
     try:
@@ -143,12 +147,89 @@ async def payouts(request):
     except Exception:
         logging.exception("PWA payout creation failed"); return web.json_response({"error":"Не вдалося записати виплату"},status=500)
 
+
+def _date_filter(request, column="created_at"):
+    start=request.query.get("from","").strip()
+    end=request.query.get("to","").strip()
+    clauses=[]; params=[]
+    if start:
+        clauses.append(f"{column} >= %s::date"); params.append(start)
+    if end:
+        clauses.append(f"{column} < (%s::date + INTERVAL '1 day')"); params.append(end)
+    return (" WHERE "+" AND ".join(clauses) if clauses else ""), params
+
+async def chart_data(request):
+    where,params=_date_filter(request)
+    with conn() as c,c.cursor() as q:
+        q.execute("SELECT DATE(created_at) day, COALESCE(SUM(gross) FILTER(WHERE currency='UAH'),0) uah, COALESCE(SUM(gross) FILTER(WHERE currency='USDT'),0) usdt FROM exchanges"+where+" GROUP BY DATE(created_at) ORDER BY day",params)
+        rows=q.fetchall()
+    return web.json_response([{"day":r[0].isoformat(),"uah":str(r[1]),"usdt":str(r[2])} for r in rows])
+
+async def audit_history(request):
+    if not _require_admin(request):
+        return web.json_response({"error":"Журнал доступний лише Єгору."},status=403)
+    where,params=_date_filter(request)
+    with conn() as c,c.cursor() as q:
+        q.execute("SELECT id,actor,action,details,created_at FROM audit_log"+where+" ORDER BY id DESC LIMIT 500",params)
+        rows=q.fetchall()
+    return web.json_response([{"id":r[0],"actor":r[1],"action":r[2],"details":r[3],"created_at":r[4].isoformat() if r[4] else None} for r in rows])
+
+def _xlsx_cell(value):
+    if value is None: return '<c t="inlineStr"><is><t></t></is></c>'
+    if isinstance(value,(int,float,Decimal)) and not isinstance(value,bool):
+        return '<c><v>'+escape(str(value))+'</v></c>'
+    return '<c t="inlineStr"><is><t xml:space="preserve">'+escape(str(value))+'</t></is></c>'
+
+def _make_xlsx(sheets):
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1,len(sheets)+1))+'</Types>')
+        z.writestr("_rels/.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr("xl/workbook.xml",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'+''.join(f'<sheet name="{escape(name)}" sheetId="{i}" r:id="rId{i}"/>' for i,(name,_) in enumerate(sheets,1))+'</sheets></workbook>')
+        z.writestr("xl/_rels/workbook.xml.rels",'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,len(sheets)+1))+'</Relationships>')
+        for i,(_,rows) in enumerate(sheets,1):
+            xml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+            for row in rows: xml+='<row>'+''.join(_xlsx_cell(v) for v in row)+'</row>'
+            xml+='</sheetData></worksheet>'
+            z.writestr(f"xl/worksheets/sheet{i}.xml",xml)
+    return out.getvalue()
+
+async def export_xlsx(request):
+    where,params=_date_filter(request)
+    with conn() as c,c.cursor() as q:
+        q.execute("SELECT id,direction,received,paid,cost,gross,currency,note,created_at FROM exchanges"+where+" ORDER BY id DESC",params)
+        ex=[["ID","Напрямок","Отримано","Видано","Собівартість","Результат","Валюта","Примітка","Дата"]]+[list(r) for r in q.fetchall()]
+        q.execute("SELECT id,currency,amount,description,created_at FROM expenses"+where+" ORDER BY id DESC",params)
+        expenses=[["ID","Валюта","Сума","Опис","Дата"]]+[list(r) for r in q.fetchall()]
+        q.execute("SELECT id,partner,currency,amount,created_at FROM payouts"+where+" ORDER BY id DESC",params)
+        payouts=[["ID","Партнер","Валюта","Сума","Дата"]]+[list(r) for r in q.fetchall()]
+    payload=_make_xlsx([("Обміни",ex),("Витрати",expenses),("Виплати",payouts)])
+    return web.Response(body=payload,content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":"attachment; filename=soyer-accounting.xlsx"})
+
+async def backup_json(request):
+    if not _require_admin(request):
+        return web.json_response({"error":"Резервна копія доступна лише Єгору."},status=403)
+    tables=("exchanges","expenses","payouts","audit_log")
+    backup={"app":"SOYER ACCOUNTING","created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"tables":{}}
+    with conn() as c,c.cursor() as q:
+        for table_name in tables:
+            q.execute("SELECT * FROM "+table_name+" ORDER BY id")
+            columns=[d[0] for d in q.description]
+            backup["tables"][table_name]=[dict(zip(columns,row)) for row in q.fetchall()]
+    audit(0,"backup_created","JSON backup downloaded")
+    return web.Response(text=json.dumps(backup,ensure_ascii=False,default=str,indent=2),content_type="application/json",headers={"Content-Disposition":"attachment; filename=soyer-accounting-backup.json"})
+
+
 async def health(request): return web.json_response({"ok":True,"service":"SOYER ACCOUNTING"})
 
 def create_app(notify=None):
     app=web.Application(middlewares=[auth_middleware],client_max_size=1024*1024)
     app.router.add_post("/api/login",login); app.router.add_post("/api/logout",logout)
     app.router.add_get("/api/me",me)
+    app.router.add_get("/api/chart",chart_data)
+    app.router.add_get("/api/audit",audit_history)
+    app.router.add_get("/api/export.xlsx",export_xlsx)
+    app.router.add_get("/api/backup",backup_json)
     app.router.add_get("/api/stats",stats); app.router.add_get("/api/exchanges",exchanges); app.router.add_post("/api/exchanges",exchanges)
     app.router.add_delete("/api/exchanges/{exchange_id:\\d+}",delete_exchange)
     app.router.add_get("/api/expenses",expenses); app.router.add_post("/api/expenses",expenses)
