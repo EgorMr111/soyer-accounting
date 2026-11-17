@@ -10,7 +10,7 @@ APP_PASSWORD=os.getenv("APP_PASSWORD","")
 ADMIN_PASSWORD=os.getenv("ADMIN_PASSWORD","")
 SESSION_SECRET=os.getenv("SESSION_SECRET","")
 APP_URL=os.getenv("APP_URL","")
-COOKIE="soyer_session_v2"
+COOKIE="soyer_session_v3"
 SESSION_TTL=60*60*24*7
 
 def _signature(value):
@@ -38,10 +38,20 @@ def _actor_id(request):
 @web.middleware
 async def auth_middleware(request,handler):
     if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
-        return await handler(request)
-    if request.path=="/api/login" and request.method=="POST": return await handler(request)
-    if request.path.startswith("/api/") and not _valid_session(request):
-        return web.json_response({"error":"unauthorized"},status=401)
+        response = await handler(request)
+        if request.path == "/":
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        return response
+    if request.path.startswith("/api/"):
+        if request.path == "/api/login" and request.method == "POST":
+            response = await handler(request)
+        elif not _valid_session(request):
+            response = web.json_response({"error":"unauthorized"},status=401)
+        else:
+            response = await handler(request)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        return response
     return await handler(request)
 
 def _decimal(value,name):
@@ -65,7 +75,7 @@ async def login(request):
     stamp=str(int(time.time()))
     signed=stamp+"."+role
     response=web.json_response({"ok":True,"role":role})
-    response.set_cookie(COOKIE,signed+"."+_signature(signed),httponly=True,secure=True,samesite="Strict",max_age=SESSION_TTL,path="/")
+    response.set_cookie(COOKIE,signed+"."+_signature(signed),httponly=True,secure=True,samesite="Lax",max_age=SESSION_TTL,path="/")
     return response
 
 async def logout(request):
@@ -76,23 +86,23 @@ async def me(request):
 
 async def delete_exchange(request):
     if not _require_admin(request):
-        return web.json_response({"error":"Недостатньо прав. Видаляти обміни може лише Єгор."},status=403)
+        return web.json_response({"error":"Недостатньо прав. Архівувати обміни може лише Єгор."},status=403)
     try:
         exchange_id=int(request.match_info["exchange_id"])
         if exchange_id<=0: raise ValueError()
         with conn() as c,c.cursor() as q:
-            q.execute("DELETE FROM exchanges WHERE id=%s RETURNING id,direction,gross,currency",(exchange_id,))
+            q.execute("UPDATE exchanges SET status='DELETED' WHERE id=%s AND status='SUCCESS' RETURNING id,direction,gross,currency",(exchange_id,))
             row=q.fetchone()
             if not row:
-                return web.json_response({"error":"Обмін не знайдено"},status=404)
-            q.execute("INSERT INTO audit_log(actor,action,details) VALUES(%s,%s,%s)",(_actor_id(request),"exchange_deleted",f"id={row[0]} direction={row[1]} gross={row[2]} {row[3]}"))
+                return web.json_response({"error":"Активний обмін не знайдено"},status=404)
+            q.execute("INSERT INTO audit_log(actor,action,details) VALUES(%s,%s,%s)",(_actor_id(request),"exchange_archived",f"id={row[0]} direction={row[1]} gross={row[2]} {row[3]}"))
             c.commit()
-        return web.json_response({"ok":True,"deleted_id":exchange_id})
+        return web.json_response({"ok":True,"archived_id":exchange_id})
     except (ValueError,KeyError):
         return web.json_response({"error":"Некоректний ID обміну"},status=400)
     except Exception:
-        logging.exception("Exchange deletion failed")
-        return web.json_response({"error":"Не вдалося видалити обмін"},status=500)
+        logging.exception("Exchange archive failed")
+        return web.json_response({"error":"Не вдалося перемістити обмін в архів"},status=500)
 
 async def stats(request):
     where,params=_date_filter(request)
@@ -110,6 +120,7 @@ async def exchanges(request):
     if request.method=="GET":
         with conn() as c,c.cursor() as q:
             where,params=_date_filter(request)
+            where = (where + " AND status='SUCCESS'") if where else " WHERE status='SUCCESS'"
             q.execute("SELECT id,direction,received,paid,cost,gross,currency,denis_share,egor_share,note,created_at FROM exchanges"+where+" ORDER BY id DESC LIMIT 100",params)
             rows=q.fetchall()
         keys=["id","direction","received","paid","cost","gross","currency","denis_share","egor_share","note","created_at"]
@@ -182,6 +193,7 @@ def _date_filter(request, column="created_at"):
 async def chart_data(request):
     where,params=_date_filter(request)
     with conn() as c,c.cursor() as q:
+        where = (where + " AND status='SUCCESS'") if where else " WHERE status='SUCCESS'"
         q.execute("SELECT DATE(created_at) AS chart_day, COALESCE(SUM(gross) FILTER(WHERE currency='UAH'),0) AS uah, COALESCE(SUM(gross) FILTER(WHERE currency='USDT'),0) AS usdt FROM exchanges"+where+" GROUP BY DATE(created_at) ORDER BY chart_day",params)
         rows=q.fetchall()
     return web.json_response([{"day":r[0].isoformat(),"uah":str(r[1]),"usdt":str(r[2])} for r in rows])
@@ -220,6 +232,7 @@ async def export_xlsx(request):
         return web.json_response({"error":"Експорт доступний лише Єгору."},status=403)
     where,params=_date_filter(request)
     with conn() as c,c.cursor() as q:
+        where = (where + " AND status='SUCCESS'") if where else " WHERE status='SUCCESS'"
         q.execute("SELECT id,direction,received,paid,cost,gross,currency,note,created_at FROM exchanges"+where+" ORDER BY id DESC",params)
         ex=[["ID","Напрямок","Отримано","Видано","Собівартість","Результат","Валюта","Примітка","Дата"]]+[list(r) for r in q.fetchall()]
         q.execute("SELECT id,currency,amount,description,created_at FROM expenses"+where+" ORDER BY id DESC",params)
