@@ -30,6 +30,9 @@ def _valid_session(request):
 def _require_admin(request):
     return _session_role(request)=="admin"
 
+def _actor_id(request):
+    return 1 if _require_admin(request) else 2
+
 @web.middleware
 async def auth_middleware(request,handler):
     if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
@@ -80,7 +83,7 @@ async def delete_exchange(request):
             row=q.fetchone()
             if not row:
                 return web.json_response({"error":"Обмін не знайдено"},status=404)
-            q.execute("INSERT INTO audit_log(actor,action,details) VALUES(%s,%s,%s)",(0,"exchange_deleted",f"id={row[0]} direction={row[1]} gross={row[2]} {row[3]}"))
+            q.execute("INSERT INTO audit_log(actor,action,details) VALUES(%s,%s,%s)",(_actor_id(request),"exchange_deleted",f"id={row[0]} direction={row[1]} gross={row[2]} {row[3]}"))
             c.commit()
         return web.json_response({"ok":True,"deleted_id":exchange_id})
     except (ValueError,KeyError):
@@ -90,7 +93,16 @@ async def delete_exchange(request):
         return web.json_response({"error":"Не вдалося видалити обмін"},status=500)
 
 async def stats(request):
-    return web.json_response({"dashboard":dashboard(),"partners":partner_report()},dumps=lambda obj:json.dumps(obj,default=str))
+    where,params=_date_filter(request)
+    with conn() as c,c.cursor() as q:
+        q.execute("SELECT COUNT(*),COALESCE(SUM(gross) FILTER(WHERE currency='UAH' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='UAH' AND gross<0),0),COALESCE(SUM(gross) FILTER(WHERE currency='USDT' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='USDT' AND gross<0),0),COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0),COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) FROM exchanges"+where+" AND status='SUCCESS'" if where else "SELECT COUNT(*),COALESCE(SUM(gross) FILTER(WHERE currency='UAH' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='UAH' AND gross<0),0),COALESCE(SUM(gross) FILTER(WHERE currency='USDT' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='USDT' AND gross<0),0),COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0),COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) FROM exchanges WHERE status='SUCCESS'",params)
+        e=q.fetchone()
+        q.execute("SELECT COALESCE(SUM(amount),0) FROM expenses"+where,params); expenses_sum=q.fetchone()[0]
+        q.execute("SELECT COALESCE(SUM(amount),0) FROM payouts"+where,params); paid=q.fetchone()[0]
+        q.execute("SELECT COALESCE(SUM(amount) FILTER(WHERE partner='denis'),0),COALESCE(SUM(amount) FILTER(WHERE partner='egor'),0) FROM payouts"+where,params); pp=q.fetchone()
+    d={"count":e[0],"gross":e[1],"losses":e[2],"gross_usdt":e[3],"losses_usdt":e[4],"denis":e[5],"egor":e[6],"expenses":expenses_sum,"paid_out":paid,"currency":"UAH"}
+    partners={"denis_accrued":e[5],"egor_accrued":e[6],"denis_paid":pp[0],"egor_paid":pp[1],"denis_due":e[5]-pp[0],"egor_due":e[6]-pp[1]}
+    return web.json_response({"dashboard":d,"partners":partners},dumps=lambda obj:json.dumps(obj,default=str))
 
 async def exchanges(request):
     if request.method=="GET":
@@ -102,7 +114,7 @@ async def exchanges(request):
         return web.json_response([dict(zip(keys,[str(v) if isinstance(v,Decimal) else v.isoformat() if hasattr(v,"isoformat") else v for v in row])) for row in rows])
     try:
         d=await request.json()
-        result=add_exchange(d["direction"],_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],int(d.get("actor",0)))
+        result=add_exchange(d["direction"],_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],_actor_id(request))
         if notify: await notify(f"✅ Новий обмін #{result['id']} · {result['direction']} · результат {result['gross']} {result['currency']}")
         return web.json_response({"ok":True,**{k:str(v) for k,v in result.items()}})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
@@ -216,7 +228,7 @@ async def backup_json(request):
             q.execute("SELECT * FROM "+table_name+" ORDER BY id")
             columns=[d[0] for d in q.description]
             backup["tables"][table_name]=[dict(zip(columns,row)) for row in q.fetchall()]
-    audit(0,"backup_created","JSON backup downloaded")
+    audit(_actor_id(request),"backup_created","JSON backup downloaded")
     return web.Response(text=json.dumps(backup,ensure_ascii=False,default=str,indent=2),content_type="application/json",headers={"Content-Disposition":"attachment; filename=soyer-accounting-backup.json"})
 
 
