@@ -3,7 +3,7 @@
 Installable PWA accounting workspace for SOYER EXCHANGE, backed by PostgreSQL. Telegram bot is used as a notification companion.
 
 ## Features
-- Password-protected PWA with signed secure session cookie.
+- Password-protected PWA with signed secure session cookie (7-day session).
 - Installable PWA for desktop and mobile (service worker + manifest).
 - Dashboard, exchange history, expenses, partner shares and payouts.
 - Telegram notifications for new PWA operations.
@@ -28,6 +28,9 @@ For each exchange, `paid` and `cost` must be entered in the same currency: the c
    - `ADMIN_IDS`: `DENIS_ID,EGOR_ID`
    - `DENIS_ID`: Denis Telegram numeric ID
    - `EGOR_ID`: Egor Telegram numeric ID
+   - `APP_PASSWORD`: shared password for the regular workspace account
+   - `ADMIN_PASSWORD`: separate administrator password for Egor
+   - `SESSION_SECRET`: long random secret; keep it stable between deploys
    Render creates PostgreSQL and supplies `DATABASE_URL`.
 5. Deploy. Open `https://soyer-accounting.onrender.com` and sign in with `APP_PASSWORD`. Send `/start` to the Telegram bot to get the app link and receive operation notifications.
 
