@@ -44,6 +44,29 @@ def init_db():
         ALTER TABLE payouts ADD COLUMN IF NOT EXISTS created_by BIGINT NOT NULL DEFAULT 0;
         ALTER TABLE payouts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
         CREATE UNIQUE INDEX IF NOT EXISTS exchanges_external_id_unique ON exchanges(external_id) WHERE external_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS deleted_exchanges(
+          archive_id BIGSERIAL PRIMARY KEY, original_id BIGINT NOT NULL, external_id TEXT,
+          direction TEXT NOT NULL, received NUMERIC(30,10) NOT NULL, paid NUMERIC(30,10) NOT NULL,
+          cost NUMERIC(30,10) NOT NULL, gross NUMERIC(30,10) NOT NULL, currency TEXT NOT NULL,
+          denis_share NUMERIC(30,10) NOT NULL, egor_share NUMERIC(30,10) NOT NULL,
+          note TEXT, created_by BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+          status TEXT NOT NULL, deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+        CREATE OR REPLACE FUNCTION soyer_archive_exchange_delete() RETURNS trigger AS $
+        BEGIN
+          INSERT INTO deleted_exchanges(original_id,external_id,direction,received,paid,cost,gross,currency,
+            denis_share,egor_share,note,created_by,created_at,status)
+          VALUES(OLD.id,OLD.external_id,OLD.direction,OLD.received,OLD.paid,OLD.cost,OLD.gross,OLD.currency,
+            OLD.denis_share,OLD.egor_share,OLD.note,OLD.created_by,OLD.created_at,OLD.status);
+          INSERT INTO audit_log(actor,action,details)
+          VALUES(0,'exchange_hard_delete_archived',
+            format('id=%s direction=%s gross=%s %s',OLD.id,OLD.direction,OLD.gross,OLD.currency));
+          RETURN OLD;
+        END;
+        $ LANGUAGE plpgsql;
+        DROP TRIGGER IF EXISTS soyer_archive_exchange_before_delete ON exchanges;
+        CREATE TRIGGER soyer_archive_exchange_before_delete
+          BEFORE DELETE ON exchanges FOR EACH ROW
+          EXECUTE FUNCTION soyer_archive_exchange_delete();
         """)
         c.commit()
 
@@ -88,7 +111,7 @@ def dashboard():
 
 def recent_exchanges():
     with conn() as c,c.cursor(cursor_factory=RealDictCursor) as q:
-        q.execute("SELECT id,direction,gross,currency,created_at FROM exchanges ORDER BY id DESC LIMIT 10")
+        q.execute("SELECT id,direction,gross,currency,created_at FROM exchanges WHERE status='SUCCESS' ORDER BY id DESC LIMIT 10")
         return q.fetchall()
 
 def add_expense(currency,amount,description,actor):
