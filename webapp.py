@@ -116,9 +116,10 @@ async def exchanges(request):
         return web.json_response([dict(zip(keys,[str(v) if isinstance(v,Decimal) else v.isoformat() if hasattr(v,"isoformat") else v for v in row])) for row in rows])
     try:
         d=await request.json()
-        result=add_exchange(d["direction"],_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],_actor_id(request))
+        direction=str(d["direction"])
+        result=add_exchange(direction,_decimal(d["received"],"received"),_decimal(d["paid"],"paid"),_decimal(d["cost"],"cost"),str(d.get("note",""))[:300],_actor_id(request))
         if notify:
-            try: await notify(f"✅ Новий обмін #{result['id']} · {result['direction']} · результат {result['gross']} {result['currency']}")
+            try: await notify(f"✅ Новий обмін #{result['id']} · {direction} · результат {result['gross']} {result['currency']}")
             except Exception: logging.exception("Database operation saved, but Telegram notification failed")
         return web.json_response({"ok":True,**{k:str(v) for k,v in result.items()}})
     except (KeyError,ValueError) as e: return web.json_response({"error":str(e)},status=400)
@@ -181,7 +182,7 @@ def _date_filter(request, column="created_at"):
 async def chart_data(request):
     where,params=_date_filter(request)
     with conn() as c,c.cursor() as q:
-        q.execute("SELECT DATE(created_at) day, COALESCE(SUM(gross) FILTER(WHERE currency='UAH'),0) uah, COALESCE(SUM(gross) FILTER(WHERE currency='USDT'),0) usdt FROM exchanges"+where+" GROUP BY DATE(created_at) ORDER BY day",params)
+        q.execute("SELECT DATE(created_at) AS chart_day, COALESCE(SUM(gross) FILTER(WHERE currency='UAH'),0) AS uah, COALESCE(SUM(gross) FILTER(WHERE currency='USDT'),0) AS usdt FROM exchanges"+where+" GROUP BY DATE(created_at) ORDER BY chart_day",params)
         rows=q.fetchall()
     return web.json_response([{"day":r[0].isoformat(),"uah":str(r[1]),"usdt":str(r[2])} for r in rows])
 
