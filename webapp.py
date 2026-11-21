@@ -38,22 +38,25 @@ def _actor_id(request):
 
 @web.middleware
 async def auth_middleware(request,handler):
-    if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
-        response = await handler(request)
-        if request.path == "/":
+    try:
+        if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
+            response = await handler(request)
+            if request.path == "/":
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            return response
+        if request.path.startswith("/api/"):
+            if request.path == "/api/login" and request.method == "POST":
+                response = await handler(request)
+            elif not _valid_session(request):
+                response = web.json_response({"error":"unauthorized"},status=401)
+            else:
+                response = await handler(request)
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        return response
-    if request.path.startswith("/api/"):
-        if request.path == "/api/login" and request.method == "POST":
-            response = await handler(request)
-        elif not _valid_session(request):
-            response = web.json_response({"error":"unauthorized"},status=401)
-        else:
-            response = await handler(request)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        return response
-    return await handler(request)
+            response.headers["Pragma"] = "no-cache"
+            return response
+        return await handler(request)
+    except ValueError as e:
+        return web.json_response({"error":str(e)},status=400)
 
 def _decimal(value,name):
     try: v=Decimal(str(value).replace(",","."))
