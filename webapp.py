@@ -1,4 +1,5 @@
 import os, hmac, hashlib, time, json, logging, io, zipfile
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from xml.sax.saxutils import escape
 from aiohttp import web
@@ -37,27 +38,31 @@ def _actor_id(request):
 
 @web.middleware
 async def auth_middleware(request,handler):
-    if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
-        response = await handler(request)
-        if request.path == "/":
+    try:
+        if request.path in ("/","/login","/manifest.webmanifest","/sw.js","/icon.svg") or request.path.startswith("/assets/"):
+            response = await handler(request)
+            if request.path == "/":
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+            return response
+        if request.path.startswith("/api/"):
+            if request.path == "/api/login" and request.method == "POST":
+                response = await handler(request)
+            elif not _valid_session(request):
+                response = web.json_response({"error":"unauthorized"},status=401)
+            else:
+                response = await handler(request)
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        return response
-    if request.path.startswith("/api/"):
-        if request.path == "/api/login" and request.method == "POST":
-            response = await handler(request)
-        elif not _valid_session(request):
-            response = web.json_response({"error":"unauthorized"},status=401)
-        else:
-            response = await handler(request)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        return response
-    return await handler(request)
+            response.headers["Pragma"] = "no-cache"
+            return response
+        return await handler(request)
+    except ValueError as e:
+        return web.json_response({"error":str(e)},status=400)
 
 def _decimal(value,name):
     try: v=Decimal(str(value).replace(",","."))
-    except (InvalidOperation,ValueError): raise ValueError(f"Некоректне поле: {name}")
-    if not v.is_finite(): raise ValueError(f"Некоректне поле: {name}")
+    except (InvalidOperation,ValueError,TypeError): raise ValueError(f"Некоректне поле: {name}")
+    if not v.is_finite() or v.adjusted() > 19 or max(0,-v.as_tuple().exponent) > 10:
+        raise ValueError(f"Некоректне поле: {name}")
     return v
 
 async def login(request):
@@ -109,9 +114,9 @@ async def stats(request):
     with conn() as c,c.cursor() as q:
         q.execute("SELECT COUNT(*),COALESCE(SUM(gross) FILTER(WHERE currency='UAH' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='UAH' AND gross<0),0),COALESCE(SUM(gross) FILTER(WHERE currency='USDT' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='USDT' AND gross<0),0),COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0),COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) FROM exchanges"+where+" AND status='SUCCESS'" if where else "SELECT COUNT(*),COALESCE(SUM(gross) FILTER(WHERE currency='UAH' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='UAH' AND gross<0),0),COALESCE(SUM(gross) FILTER(WHERE currency='USDT' AND gross>0),0),COALESCE(SUM(ABS(gross)) FILTER(WHERE currency='USDT' AND gross<0),0),COALESCE(SUM(denis_share) FILTER(WHERE currency='UAH'),0),COALESCE(SUM(egor_share) FILTER(WHERE currency='UAH'),0) FROM exchanges WHERE status='SUCCESS'",params)
         e=q.fetchone()
-        q.execute("SELECT COALESCE(SUM(amount),0) FROM expenses"+where,params); expenses_sum=q.fetchone()[0]
-        q.execute("SELECT COALESCE(SUM(amount),0) FROM payouts"+where,params); paid=q.fetchone()[0]
-        q.execute("SELECT COALESCE(SUM(amount) FILTER(WHERE partner='denis'),0),COALESCE(SUM(amount) FILTER(WHERE partner='egor'),0) FROM payouts"+where,params); pp=q.fetchone()
+        q.execute("SELECT COALESCE(SUM(amount),0) FROM expenses"+where+" AND currency='UAH'" if where else "SELECT COALESCE(SUM(amount),0) FROM expenses WHERE currency='UAH'",params); expenses_sum=q.fetchone()[0]
+        q.execute("SELECT COALESCE(SUM(amount),0) FROM payouts"+where+" AND currency='UAH'" if where else "SELECT COALESCE(SUM(amount),0) FROM payouts WHERE currency='UAH'",params); paid=q.fetchone()[0]
+        q.execute("SELECT COALESCE(SUM(amount) FILTER(WHERE partner='denis' AND currency='UAH'),0),COALESCE(SUM(amount) FILTER(WHERE partner='egor' AND currency='UAH'),0) FROM payouts"+where,params); pp=q.fetchone()
     d={"count":e[0],"gross":e[1],"losses":e[2],"gross_usdt":e[3],"losses_usdt":e[4],"denis":e[5],"egor":e[6],"expenses":expenses_sum,"paid_out":paid,"currency":"UAH"}
     partners={"denis_accrued":e[5],"egor_accrued":e[6],"denis_paid":pp[0],"egor_paid":pp[1],"denis_due":e[5]-pp[0],"egor_due":e[6]-pp[1]}
     return web.json_response({"dashboard":d,"partners":partners},dumps=lambda obj:json.dumps(obj,default=str))
@@ -183,6 +188,11 @@ async def payouts(request):
 def _date_filter(request, column="created_at"):
     start=request.query.get("from","").strip()
     end=request.query.get("to","").strip()
+    for label,value in (("from",start),("to",end)):
+        if value:
+            try: date.fromisoformat(value)
+            except ValueError: raise ValueError(f"Некоректна дата {label}")
+    if start and end and start>end: raise ValueError("Дата початку не може бути пізніше дати завершення")
     clauses=[]; params=[]
     if start:
         clauses.append(f"{column} >= %s::date"); params.append(start)
@@ -235,9 +245,11 @@ async def export_xlsx(request):
         where = (where + " AND status='SUCCESS'") if where else " WHERE status='SUCCESS'"
         q.execute("SELECT id,direction,received,paid,cost,gross,currency,note,created_at FROM exchanges"+where+" ORDER BY id DESC",params)
         ex=[["ID","Напрямок","Отримано","Видано","Собівартість","Результат","Валюта","Примітка","Дата"]]+[list(r) for r in q.fetchall()]
-        q.execute("SELECT id,currency,amount,description,created_at FROM expenses"+where+" ORDER BY id DESC",params)
+        expense_where,expense_params=_date_filter(request)
+        q.execute("SELECT id,currency,amount,description,created_at FROM expenses"+expense_where+" ORDER BY id DESC",expense_params)
         expenses=[["ID","Валюта","Сума","Опис","Дата"]]+[list(r) for r in q.fetchall()]
-        q.execute("SELECT id,partner,currency,amount,created_at FROM payouts"+where+" ORDER BY id DESC",params)
+        payout_where,payout_params=_date_filter(request)
+        q.execute("SELECT id,partner,currency,amount,created_at FROM payouts"+payout_where+" ORDER BY id DESC",payout_params)
         payouts=[["ID","Партнер","Валюта","Сума","Дата"]]+[list(r) for r in q.fetchall()]
     payload=_make_xlsx([("Обміни",ex),("Витрати",expenses),("Виплати",payouts)])
     return web.Response(body=payload,content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":"attachment; filename=soyer-accounting.xlsx"})
@@ -245,7 +257,7 @@ async def export_xlsx(request):
 async def backup_json(request):
     if not _require_admin(request):
         return web.json_response({"error":"Резервна копія доступна лише Єгору."},status=403)
-    tables=("exchanges","expenses","payouts","audit_log")
+    tables=("exchanges","expenses","payouts","audit_log","deleted_exchanges")
     backup={"app":"SOYER ACCOUNTING","created_at":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()),"tables":{}}
     with conn() as c,c.cursor() as q:
         for table_name in tables:
@@ -256,7 +268,13 @@ async def backup_json(request):
     return web.Response(text=json.dumps(backup,ensure_ascii=False,default=str,indent=2),content_type="application/json",headers={"Content-Disposition":"attachment; filename=soyer-accounting-backup.json"})
 
 
-async def health(request): return web.json_response({"ok":True,"service":"SOYER ACCOUNTING"})
+async def health(request):
+    try:
+        with conn() as c, c.cursor() as q: q.execute("SELECT 1")
+        return web.json_response({"ok":True,"service":"SOYER ACCOUNTING","database":"connected"})
+    except Exception:
+        logging.exception("Health check: database unavailable")
+        return web.json_response({"ok":False,"service":"SOYER ACCOUNTING","database":"unavailable"},status=503)
 
 def create_app(notify_callback=None):
     global notify
