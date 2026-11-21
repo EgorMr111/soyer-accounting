@@ -1,6 +1,5 @@
 import os, asyncio, logging, hashlib, hmac, json
 import psycopg2
-import psycopg2
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
 from aiohttp import web
