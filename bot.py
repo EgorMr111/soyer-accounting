@@ -1,4 +1,5 @@
 import os, asyncio, logging, hashlib, hmac, json
+import psycopg2
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
 from aiohttp import web
@@ -46,7 +47,7 @@ def money(v): return f"{Decimal(v):,.2f}".replace(",", " ").replace(".", ",")
 async def start(m: Message):
     if not allowed(m.from_user.id):
         await m.answer("⛔ Доступ закритий. Ваш Telegram ID: <code>%s</code>" % m.from_user.id); return
-    await m.answer("💼 <b>SOYER ACCOUNTING</b>\n\nВідкрийте вебзастосунок для роботи з обмінами, витратами та виплатами:\n" + (f"<a href=\"{APP_URL}\">Відкрити SOYER ACCOUNTING</a>" if APP_URL else "Посилання на застосунок ще не налаштоване.") + "\n\nЦей бот надсилатиме повідомлення про нові операції.")
+    await m.answer("💼 <b>SOYER ACCOUNTING</b>\n\nВідкрийте вебзастосунок для роботи з обмінами, витратами та виплатами:\n" + (f"<a href=\"{APP_URL}\">Відкрити SOYER ACCOUNTING</a>" if APP_URL else "Посилання на застосунок ще не налаштоване.") + "\n\nЦей бот надсилатиме повідомлення про нові операції.", reply_markup=menu())
 
 @dp.message(Command("id"))
 async def get_id(m: Message):
@@ -178,7 +179,12 @@ async def exp_amount(m: Message, state: FSMContext):
 @dp.message(ExpenseForm.description)
 async def exp_desc(m: Message, state: FSMContext):
     d=await state.get_data()
-    add_expense(d["currency"], Decimal(d["amount"]), m.text[:300], m.from_user.id)
+    try:
+        add_expense(d["currency"], Decimal(d["amount"]), m.text[:300], m.from_user.id)
+    except Exception:
+        logging.exception("expense save failed")
+        await m.answer("Не вдалося зберегти витрату. Перевірте базу даних.")
+        await state.clear(); return
     await state.clear(); await m.answer("✅ Витрату записано.", reply_markup=menu())
 
 @dp.callback_query(F.data == "payout")
@@ -218,6 +224,7 @@ async def api_exchange(request):
     except: return web.json_response({"error":"invalid json"}, status=400)
     required=("external_id","direction","received","paid","cost")
     if any(k not in data for k in required): return web.json_response({"error":"missing fields"}, status=400)
+    if not str(data.get("external_id","")).strip(): return web.json_response({"error":"external_id must be non-empty"},status=400)
     try:
         result=add_exchange(data["direction"], Decimal(str(data["received"])), Decimal(str(data["paid"])),
                             Decimal(str(data["cost"])), str(data.get("note",""))[:300], 0,
