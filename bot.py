@@ -1,5 +1,6 @@
 import os, asyncio, logging, hashlib, hmac, json
 import psycopg2
+import psycopg2
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
 from aiohttp import web
@@ -230,7 +231,12 @@ async def api_exchange(request):
                             Decimal(str(data["cost"])), str(data.get("note",""))[:300], 0,
                             external_id=str(data["external_id"]))
     except ValueError as e:
-        return web.json_response({"error":str(e)}, status=409)
+        return web.json_response({"error":str(e)}, status=400)
+    except psycopg2.errors.UniqueViolation:
+        return web.json_response({"error":"duplicate external_id"},status=409)
+    except Exception:
+        logging.exception("Signed exchange API failed")
+        return web.json_response({"error":"exchange could not be saved"},status=500)
     return web.json_response({"ok":True,"exchange_id":result["id"],"gross":str(result["gross"]),
                               "denis":str(result["denis"]),"egor":str(result["egor"])})
 
